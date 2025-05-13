@@ -60,8 +60,10 @@ sudo tee /var/named/db.$DNS_DOMAIN > /dev/null <<EOL
         2419200    ; Expire
         604800 )   ; Negative Cache TTL
 
-@   IN  NS  ns1.$DNS_DOMAIN.
-ns1 IN  A   $DNS_IP
+@                   IN  NS  ns1.$DNS_DOMAIN.
+projet.lan        IN  A  $DNS_IP
+projet.local.   IN  A  $DNS_IP
+ns1 IN A $DNS_IP
 EOL
 
 # Fichier de zone inverse
