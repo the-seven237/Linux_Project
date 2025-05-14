@@ -2,86 +2,84 @@
 
 # Variables
 CLIENT_NAME="client1"
-NFS_SHARE_DIR="/srv_test/partage"   # Répertoire à partager avec NFS
-SAMBA_SHARE_DIR="/srv_test/partage" # Répertoire à partager avec Samba
+CLIENT_PASSWORD="motdepasse123"  # à modifier ou à générer dynamiquement
+SHARE_DIR="/srv_test/partage"
 
-# Mise à jour des paquets
-echo "Mise à jour des paquets..."
+echo "[INFO] ➤ Mise à jour des paquets..."
 sudo yum update -y
 
-# --------------- NFS Configuration ---------------
+# --------------------- NFS ---------------------
 
-# Installation de NFS
-echo "Installation de NFS..."
-sudo yum install nfs-utils -y
+echo "[INFO] ➤ Installation de NFS..."
+sudo yum install -y nfs-utils
 
-# Création du répertoire à partager
-echo "Création du répertoire à partager avec NFS..."
-sudo mkdir -p $NFS_SHARE_DIR
-sudo chmod -R 777 $NFS_SHARE_DIR
+echo "[INFO] ➤ Création du répertoire de partage NFS..."
+sudo mkdir -p "$SHARE_DIR"
+sudo chmod -R 755 "$SHARE_DIR"
 
-# Configuration de NFS (exporter le répertoire)
-echo "Configuration de NFS pour partager $NFS_SHARE_DIR..."
-echo "$NFS_SHARE_DIR *(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/exports
+echo "[INFO] ➤ Configuration de /etc/exports..."
+NFS_LINE="$SHARE_DIR *(rw,sync,no_subtree_check,no_root_squash)"
+if ! grep -qF "$NFS_LINE" /etc/exports; then
+    echo "$NFS_LINE" | sudo tee -a /etc/exports
+else
+    echo "[INFO] ➤ La ligne d’export NFS existe déjà, rien à faire."
+fi
 
-# Appliquer les changements NFS
+echo "[INFO] ➤ Activation du service NFS..."
 sudo exportfs -ra
-
-# Démarrer le service NFS
 sudo systemctl enable nfs-server
 sudo systemctl start nfs-server
-echo "NFS installé et configuré."
 
-# --------------- Samba Configuration ---------------
+# --------------------- SAMBA ---------------------
 
-# Installation de Samba
-echo "Installation de Samba..."
-sudo yum install samba samba-client samba-common -y
+echo "[INFO] ➤ Installation de Samba..."
+sudo yum install -y samba samba-client samba-common
 
-# Démarrer le service Samba
-sudo systemctl enable smb
-sudo systemctl start smb
+echo "[INFO] ➤ Création du répertoire de partage Samba..."
+sudo mkdir -p "$SHARE_DIR"
+sudo chmod -R 770 "$SHARE_DIR"
 
-# Création du répertoire à partager avec Samba
-echo "Création du répertoire à partager avec Samba..."
-sudo mkdir -p $SAMBA_SHARE_DIR
-sudo chmod -R 777 $SAMBA_SHARE_DIR
+# Création d’un utilisateur système (s’il n’existe pas)
+if ! id "$CLIENT_NAME" &>/dev/null; then
+    echo "[INFO] ➤ Création de l’utilisateur système $CLIENT_NAME..."
+    sudo useradd -M -s /sbin/nologin "$CLIENT_NAME"
+fi
 
-# Créer un utilisateur système pour le client (si nécessaire)
-echo "Création de l'utilisateur système pour $CLIENT_NAME..."
-sudo useradd -m $CLIENT_NAME
-sudo chown -R $CLIENT_NAME:$CLIENT_NAME $SAMBA_SHARE_DIR
+# Définir les droits d’accès au dossier
+sudo chown -R "$CLIENT_NAME:$CLIENT_NAME" "$SHARE_DIR"
 
-# Ajouter la configuration globale dans le fichier smb.conf
-echo "Ajout de la configuration globale dans smb.conf..."
-sudo bash -c 'cat >> /etc/samba/smb.conf <<EOF
-[global]
-   workgroup = WORKGROUP
-   security = user
-   map to guest = bad user
-   guest account = nobody
-   smb ports = 445
+# Ajouter l’utilisateur à Samba avec un mot de passe
+echo "[INFO] ➤ Ajout de $CLIENT_NAME à Samba..."
+(echo "$CLIENT_PASSWORD"; echo "$CLIENT_PASSWORD") | sudo smbpasswd -a "$CLIENT_NAME"
+sudo smbpasswd -e "$CLIENT_NAME"
 
-[partage]
-   path = $SAMBA_SHARE_DIR
+# Ajouter la configuration Samba si non présente
+if ! grep -q "\[${CLIENT_NAME}_share\]" /etc/samba/smb.conf; then
+    echo "[INFO] ➤ Ajout de la section [$CLIENT_NAME\_share] à smb.conf..."
+    sudo tee -a /etc/samba/smb.conf > /dev/null <<EOF
+
+[${CLIENT_NAME}_share]
+   path = $SHARE_DIR
+   valid users = $CLIENT_NAME
    browseable = yes
    writable = yes
-   guest ok = yes
    read only = no
-EOF'
+   create mask = 0700
+   directory mask = 0700
+EOF
+else
+    echo "[INFO] ➤ La section Samba [$CLIENT_NAME\_share] existe déjà."
+fi
 
-# Redémarrer le service Samba
+# Redémarrer les services
+echo "[INFO] ➤ Redémarrage de Samba..."
+sudo systemctl enable smb
+sudo systemctl start smb
 sudo systemctl restart smb
-echo "Samba configuré pour $CLIENT_NAME."
 
-# --------------- Vérification des services ---------------
+# --------------------- Résumé ---------------------
 
-# Vérification du service NFS
-echo "Vérification du service NFS..."
-sudo systemctl status nfs-server
-
-# Vérification du service Samba
-echo "Vérification du service Samba..."
-sudo systemctl status smb
-
-echo "Installation et configuration de NFS et Samba terminées sur le serveur 2."
+echo "[SUCCESS] ➤ NFS et Samba configurés avec un partage privé pour '$CLIENT_NAME'."
+echo "  ➤ Partage : $SHARE_DIR"
+echo "  ➤ Accès Samba : \\<IP_SERVEUR>\${CLIENT_NAME}_share"
+echo "  ➤ Utilisateur : $CLIENT_NAME"
