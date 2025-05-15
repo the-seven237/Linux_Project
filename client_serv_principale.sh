@@ -9,7 +9,7 @@ DB_NAME="${CLIENT_NAME}_db"
 DB_USER="${CLIENT_NAME}_user"
 DB_PASSWORD="${CLIENT_NAME}"
 SHARE_DIR="/srv/$CLIENT_NAME"
-LOG_FILE="/var/log/${CLIENT_NAME}_setup.log"
+LOG_FILE="/home/ec2-user/${CLIENT_NAME}_setup.log"
 MYSQL_ROOT_PASSWORD="${CLIENT_NAME}"
 HOSTS_LINE="127.0.0.1 $DOMAIN"
 
@@ -26,14 +26,6 @@ echo "[INFO] ➤ Déploiement pour le client: $CLIENT_NAME"
 
 # ---------------- MISE À JOUR DU SYSTÈME ----------------
 sudo yum update -y
-
-# ---------------- FIREWALL ----------------
-echo "[INFO] ➤ Configuration du pare-feu..."
-sudo firewall-cmd --permanent --add-service=http
-sudo firewall-cmd --permanent --add-service=ftp
-sudo firewall-cmd --permanent --add-service=samba
-sudo firewall-cmd --permanent --add-service=nfs
-sudo firewall-cmd --reload
 
 # ---------------- DNS LOCAL ----------------
 echo "[INFO] ➤ Ajout de $DOMAIN à /etc/hosts..."
@@ -86,7 +78,6 @@ sudo yum install -y vsftpd
 sudo sed -i 's/^#*\s*user_sub_token=.*/user_sub_token=\$USER/' /etc/vsftpd/vsftpd.conf
 sudo sed -i "s|^#*\s*local_root=.*|local_root=$WEB_DIR|" /etc/vsftpd/vsftpd.conf
 
-# Ajout uniquement si absent
 sudo grep -q '^local_enable=YES' /etc/vsftpd/vsftpd.conf || echo "local_enable=YES" | sudo tee -a /etc/vsftpd/vsftpd.conf
 sudo grep -q '^write_enable=YES' /etc/vsftpd/vsftpd.conf || echo "write_enable=YES" | sudo tee -a /etc/vsftpd/vsftpd.conf
 sudo grep -q '^chroot_local_user=YES' /etc/vsftpd/vsftpd.conf || echo "chroot_local_user=YES" | sudo tee -a /etc/vsftpd/vsftpd.conf
@@ -129,6 +120,10 @@ echo "$SHARE_DIR *(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/
 sudo exportfs -ra
 sudo systemctl enable nfs-server
 sudo systemctl start nfs-server
+
+# ---------------- OUTILS CLIENT (OPTIONNEL) ----------------
+echo "[INFO] ➤ Installation de lftp (client FTP avancé)..."
+sudo yum install -y lftp
 
 # ---------------- RÉSUMÉ ----------------
 echo "[SUCCESS] ➤ Client $CLIENT_NAME configuré !"
