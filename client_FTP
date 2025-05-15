@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# ---------------- CONFIGURATION ----------------
+CLIENT_FTP_PACKAGE="ftp"  # Le paquet du client FTP
+
+# ---------------- MISE À JOUR DU SYSTÈME ----------------
+echo "[INFO] ➤ Mise à jour des paquets système..."
+sudo yum update -y
+
+# ---------------- INSTALLATION DU CLIENT FTP ----------------
+echo "[INFO] ➤ Installation du client FTP..."
+sudo yum install -y $CLIENT_FTP_PACKAGE
+
+# ---------------- VÉRIFICATION DE L'INSTALLATION ----------------
+if command -v ftp >/dev/null 2>&1; then
+    echo "[SUCCESS] ➤ Le client FTP a été installé avec succès !"
+else
+    echo "[ERROR] ➤ Échec de l'installation du client FTP."
+    exit 1
+fi
+
+# ---------------- TEST DE CONNEXION FTP ----------------
+echo "[INFO] ➤ Test de la connexion FTP sur localhost..."
+ftp localhost <<EOF
+bye
+EOF
+
+echo "[SUCCESS] ➤ Client FTP installé et testé avec succès."
