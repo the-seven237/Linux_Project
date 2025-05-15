@@ -1,114 +1,120 @@
 #!/bin/bash
 
-# Variables pour la configuration DNS
+# ---------------- CONFIGURATION ----------------
 DNS_DOMAIN="projet.local"
-DNS_IP="10.42.0.185"
+DNS_HOSTNAME="ns1"
+DNS_IP="10.42.0.228"
 ZONE_FILE="/var/named/db.$DNS_DOMAIN"
 REVERSE_ZONE_FILE="/var/named/db.10.42"
 BACKUP_FILE="/etc/named.conf.bak"
 
 # Étape 1: Installer BIND et les utilitaires nécessaires
-echo "[INFO] Installation de BIND et des utilitaires nécessaires..."
-sudo yum install -y bind bind-utils
+echo "[INFO] ➤ Installation de BIND..."
+sudo yum install -y bind bind-utils || { echo "[ERROR] ➤ Échec installation BIND"; exit 1; }
 
-if [ $? -ne 0 ]; then
-    echo "[ERROR] Échec de l'installation de BIND. Abandon."
-    exit 1
-fi
+# Étape 2: Sauvegarde de la configuration actuelle
+echo "[INFO] ➤ Sauvegarde de named.conf..."
+sudo cp /etc/named.conf "$BACKUP_FILE" || { echo "[ERROR] ➤ Échec sauvegarde named.conf"; exit 1; }
 
-echo "[INFO] BIND installé avec succès."
-
-# Étape 2: Sauvegarde du fichier de configuration initial
-echo "[INFO] Sauvegarde du fichier de configuration initial..."
-sudo cp /etc/named.conf "$BACKUP_FILE"
-
-if [ $? -ne 0 ]; then
-    echo "[ERROR] Échec de la sauvegarde du fichier. Abandon."
-    exit 1
-fi
-
-# Étape 2.1: Désactivation de l'écoute IPv6
-echo "[INFO] Désactivation d'IPv6 dans named.conf..."
+# Étape 2.1: Désactivation de l’écoute IPv6 (facultatif mais recommandé)
 sudo sed -i 's/^.*listen-on-v6.*$/    listen-on-v6 port 53 { none; };/' /etc/named.conf
 
-# Étape 3: Configuration du fichier /etc/named.conf
-echo "[INFO] Configuration du fichier /etc/named.conf..."
-sudo tee -a /etc/named.conf > /dev/null <<EOL
+# Étape 3: Ajouter les zones au fichier de configuration
+echo "[INFO] ➤ Configuration des zones DNS dans named.conf..."
+sudo tee -a /etc/named.conf > /dev/null <<EOF
 
 zone "$DNS_DOMAIN" IN {
     type master;
-    file "/var/named/db.$DNS_DOMAIN";
+    file "$ZONE_FILE";
 };
 
-zone "0.42.10.in-addr.arpa" IN {
+zone "42.10.in-addr.arpa" IN {
     type master;
-    file "/var/named/db.10.42";
+    file "$REVERSE_ZONE_FILE";
 };
-EOL
+EOF
 
-# Étape 4: Création des fichiers de zone DNS
-echo "[INFO] Création du fichier de zone pour $DNS_DOMAIN..."
-sudo mkdir -p /var/named
+# Étape 4: Création / mise à jour des fichiers de zone
 
-# Fichier de zone pour le domaine
-sudo tee /var/named/db.$DNS_DOMAIN > /dev/null <<EOL
+update_serial() {
+    local zonefile=$1
+    local today=$(date +%Y%m%d)
+    local current_serial=$(grep -Eo '([0-9]{10})' "$zonefile" | head -1)
+
+    if [[ $current_serial =~ ^([0-9]{8})([0-9]{2})$ ]]; then
+        local serial_date=${BASH_REMATCH[1]}
+        local serial_count=${BASH_REMATCH[2]}
+    else
+        local serial_date=$today
+        local serial_count="00"
+    fi
+
+    if [ "$serial_date" == "$today" ]; then
+        serial_count=$(printf "%02d" $((10#$serial_count + 1)))
+    else
+        serial_date=$today
+        serial_count="00"
+    fi
+
+    local new_serial="${serial_date}${serial_count}"
+
+    # Remplacer l'ancien numéro de série par le nouveau
+    sudo sed -i "0,/([0-9]\{10\})/s/([0-9]\{10\})/($new_serial)/" "$zonefile"
+
+    echo "Nouveau numéro de série pour $zonefile : $new_serial"
+}
+
+echo "[INFO] ➤ Création/mise à jour des fichiers de zone..."
+
+# Si le fichier n'existe pas, le créer avec un numéro de série initial
+if [ ! -f "$ZONE_FILE" ]; then
+    sudo tee "$ZONE_FILE" > /dev/null <<EOF
 \$TTL 86400
-@   IN  SOA ns1.$DNS_DOMAIN. admin.$DNS_DOMAIN. (
-        2023051201 ; Serial
-        604800     ; Refresh
-        86400      ; Retry
-        2419200    ; Expire
-        604800 )   ; Negative Cache TTL
+@   IN  SOA $DNS_HOSTNAME.$DNS_DOMAIN. admin.$DNS_DOMAIN. (
+        $(date +%Y%m%d)00 ; Serial
+        3600       ; Refresh
+        1800       ; Retry
+        604800     ; Expire
+        86400 )    ; Negative Cache TTL
 
-@                   IN  NS  ns1.$DNS_DOMAIN.
-projet.lan        IN  A  $DNS_IP
-projet.local.   IN  A  $DNS_IP
-ns1 IN A $DNS_IP
-EOL
-
-# Fichier de zone inverse
-echo "[INFO] Création du fichier de zone inverse..."
-sudo tee /var/named/db.10.42 > /dev/null <<EOL
-\$TTL 86400
-@   IN  SOA ns1.$DNS_DOMAIN. admin.$DNS_DOMAIN. (
-        2023051201 ; Serial
-        604800     ; Refresh
-        86400      ; Retry
-        2419200    ; Expire
-        604800 )   ; Negative Cache TTL
-
-@   IN  NS  ns1.$DNS_DOMAIN.
-185 IN  PTR  ns1.$DNS_DOMAIN.
-EOL
-
-# Étape 5: Vérification des permissions des fichiers
-echo "[INFO] Vérification des permissions des fichiers de zone..."
-sudo chown root:named /var/named/db.$DNS_DOMAIN
-sudo chown root:named /var/named/db.10.42
-sudo chmod 640 /var/named/db.$DNS_DOMAIN
-sudo chmod 640 /var/named/db.10.42
-
-# Étape 6: Redémarrer le service BIND
-echo "[INFO] Redémarrage du service BIND..."
-sudo systemctl restart named
-
-if [ $? -ne 0 ]; then
-    echo "[ERROR] Échec du redémarrage du service BIND. Abandon."
-    exit 1
+@       IN  NS      $DNS_HOSTNAME.$DNS_DOMAIN.
+$DNS_HOSTNAME IN A $DNS_IP
+alice   IN  A       $DNS_IP
+EOF
+else
+    update_serial "$ZONE_FILE"
 fi
 
-# Étape 7: Vérification du statut du service BIND
-echo "[INFO] Vérification du statut du service BIND..."
-sudo systemctl status named
+if [ ! -f "$REVERSE_ZONE_FILE" ]; then
+    sudo tee "$REVERSE_ZONE_FILE" > /dev/null <<EOF
+\$TTL 86400
+@   IN  SOA $DNS_HOSTNAME.$DNS_DOMAIN. admin.$DNS_DOMAIN. (
+        $(date +%Y%m%d)00 ; Serial
+        3600       ; Refresh
+        1800       ; Retry
+        604800     ; Expire
+        86400 )    ; Negative Cache TTL
 
-if [ $? -ne 0 ]; then
-    echo "[ERROR] BIND ne fonctionne pas correctement. Abandon."
-    exit 1
+@       IN  NS      $DNS_HOSTNAME.$DNS_DOMAIN.
+185     IN  PTR     alice.$DNS_DOMAIN.
+EOF
+else
+    update_serial "$REVERSE_ZONE_FILE"
 fi
 
-# Étape 8: Tester la résolution DNS
-echo "[INFO] Test de la résolution DNS avec dig..."
-dig @$DNS_IP $DNS_DOMAIN
+# Étape 5: Permissions
+echo "[INFO] ➤ Permissions des fichiers de zone..."
+sudo chown root:named "$ZONE_FILE" "$REVERSE_ZONE_FILE"
+sudo chmod 640 "$ZONE_FILE" "$REVERSE_ZONE_FILE"
 
-# Fin du script
-echo "[SUCCESS] DNS installé et configuré avec succès."
+# Étape 6: Redémarrage du service BIND
+echo "[INFO] ➤ Redémarrage de BIND..."
+sudo systemctl enable named
+sudo systemctl restart named || { echo "[ERROR] ➤ Échec démarrage BIND"; exit 1; }
+
+# Étape 7: Test DNS
+echo "[INFO] ➤ Test de résolution avec dig:"
+dig @$DNS_IP alice.$DNS_DOMAIN +short
+dig -x $DNS_IP @$DNS_IP +short
+
+echo "[SUCCESS] ➤ Serveur DNS fonctionnel pour $DNS_DOMAIN"
