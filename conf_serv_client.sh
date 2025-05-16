@@ -10,7 +10,7 @@ echo "[INFO] ➤ Toutes les installations et configurations seront notées dans 
 # ---------------------------------------------------
 
 # Variables
-SERVER_IP="10.42.0.228"
+SERVER_IP="10.42.0.106"
 FTP_CLIENT="lftp"
 SAMBA_CLIENT="samba-client"
 
