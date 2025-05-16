@@ -3,7 +3,7 @@
 # ---------------- CONFIGURATION ----------------
 DNS_DOMAIN="projet.local"
 DNS_HOSTNAME="ns1"
-DNS_IP="10.42.0.228"
+DNS_IP="10.42.0.106"
 ZONE_FILE="/var/named/db.$DNS_DOMAIN"
 REVERSE_ZONE_FILE="/var/named/db.10.42"
 BACKUP_FILE="/etc/named.conf.bak"

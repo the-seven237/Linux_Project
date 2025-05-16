@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e
 
+# Rediriger toute la sortie vers un journal
+LOG_FILE="/var/log/client_setup.log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+# ---------------------------------------------------
+echo "[INFO] ➤ Toutes les installations et configurations seront notées dans le journal de bord de votre serveur : $LOG_FILE"
+# ---------------------------------------------------
+
 # Variables
 SERVER_IP="10.42.0.228"
 FTP_CLIENT="lftp"
@@ -80,9 +88,7 @@ sudo systemctl start clamd
 echo "[INFO] Tests de connexion :"
 
 chronyc sources | grep "$SERVER_IP" >/dev/null && echo "[OK] Serveur NTP détecté." || echo "[FAIL] Serveur NTP absent."
-
 lftp -e "exit" ftp://$SERVER_IP && echo "[OK] Connexion FTP OK." || echo "[FAIL] Connexion FTP échouée."
-
 smbclient -L //$SERVER_IP -N > /dev/null 2>&1 && echo "[OK] Connexion Samba OK." || echo "[FAIL] Connexion Samba échouée."
 
 echo "[SUCCESS] Configuration client terminée."

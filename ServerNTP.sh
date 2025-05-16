@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Variables
-SERVER_IP="10.42.0.228"  # L'IP du serveur NTP (info inutile ici sauf documentation)
+SERVER_IP="10.42.0.106"  # L'IP du serveur NTP (info inutile ici sauf documentation)
 NETWORK="10.42.0.0/24"   # Plage d'IP autorisée à se synchroniser
 
 # Étape 1 : Installer chrony
