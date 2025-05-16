@@ -1,0 +1,221 @@
+#!/bin/bash
+set -e
+
+# Vérification des arguments
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 <client_name> <password>"
+    exit 1
+fi
+
+CLIENT_NAME="$1"
+CLIENT_PASSWORD="$2"
+CLIENT_SERVER_IP="10.42.0.106"   # IP client fixe intégrée
+
+DOMAIN="$CLIENT_NAME.projet.local"
+WEB_DIR="/var/www/$CLIENT_NAME"
+DB_NAME="${CLIENT_NAME}_db"
+DB_USER="${CLIENT_NAME}_user"
+DB_PASSWORD="${CLIENT_PASSWORD}"
+SHARE_DIR="/srv/$CLIENT_NAME"
+LOG_FILE="/home/ec2-user/${CLIENT_NAME}_setup.log"
+MYSQL_ROOT_PASSWORD="${CLIENT_PASSWORD}"
+HOSTS_LINE="127.0.0.1 $DOMAIN"
+
+echo "[INFO] ➤ Déploiement pour le client: $CLIENT_NAME"
+
+# Mise à jour et config serveur principal
+echo "[INFO] ➤ Mise à jour du système principal..."
+sudo yum update -y
+
+echo "[INFO] ➤ Ajout de $DOMAIN à /etc/hosts..."
+if ! grep -q "$HOSTS_LINE" /etc/hosts; then
+    echo "$HOSTS_LINE" | sudo tee -a /etc/hosts
+fi
+
+echo "[INFO] ➤ Installation Apache sur serveur principal..."
+sudo yum install -y httpd
+sudo mkdir -p "$WEB_DIR"
+echo "<html><h1>Bienvenue sur $DOMAIN</h1></html>" | sudo tee "$WEB_DIR/index.html" > /dev/null
+sudo chown -R apache:apache "$WEB_DIR"
+sudo chmod -R 755 "$WEB_DIR"
+
+VHOST_FILE="/etc/httpd/conf.d/$CLIENT_NAME.conf"
+sudo tee "$VHOST_FILE" > /dev/null <<EOF
+<VirtualHost *:80>
+    ServerAdmin webmaster@$DOMAIN
+    DocumentRoot $WEB_DIR
+    ServerName $DOMAIN
+    ErrorLog /var/log/httpd/${CLIENT_NAME}_error.log
+    CustomLog /var/log/httpd/${CLIENT_NAME}_access.log combined
+</VirtualHost>
+EOF
+
+sudo sed -i 's/Listen 80/Listen 0.0.0.0:80/' /etc/httpd/conf/httpd.conf
+sudo systemctl enable httpd
+sudo systemctl restart httpd
+
+echo "[INFO] ➤ Installation MariaDB sur serveur principal..."
+sudo yum install -y mariadb105-server.x86_64
+sudo systemctl enable mariadb
+sudo systemctl start mariadb
+
+echo "[INFO] ➤ Création BDD et user MariaDB pour $CLIENT_NAME..."
+sudo mysql <<EOF
+CREATE DATABASE IF NOT EXISTS $DB_NAME;
+CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';
+GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+
+echo "[INFO] ➤ Installation vsftpd sur serveur principal..."
+sudo yum install -y vsftpd
+
+sudo sed -i 's/^#*\s*user_sub_token=.*/user_sub_token=\$USER/' /etc/vsftpd/vsftpd.conf
+sudo sed -i "s|^#*\s*local_root=.*|local_root=$WEB_DIR|" /etc/vsftpd/vsftpd.conf
+sudo grep -q '^local_enable=YES' /etc/vsftpd/vsftpd.conf || echo "local_enable=YES" | sudo tee -a /etc/vsftpd/vsftpd.conf
+sudo grep -q '^write_enable=YES' /etc/vsftpd/vsftpd.conf || echo "write_enable=YES" | sudo tee -a /etc/vsftpd/vsftpd.conf
+sudo grep -q '^chroot_local_user=YES' /etc/vsftpd/vsftpd.conf || echo "chroot_local_user=YES" | sudo tee -a /etc/vsftpd/vsftpd.conf
+
+sudo useradd -d "$WEB_DIR" -s /sbin/nologin "$CLIENT_NAME" || echo "[INFO] User $CLIENT_NAME exists"
+echo "$CLIENT_PASSWORD" | sudo passwd --stdin "$CLIENT_NAME"
+sudo systemctl enable vsftpd
+sudo systemctl restart vsftpd
+
+echo "[INFO] ➤ Installation Samba sur serveur principal..."
+sudo yum install -y samba samba-client samba-common
+sudo mkdir -p "$SHARE_DIR"
+sudo chown -R "$CLIENT_NAME:$CLIENT_NAME" "$SHARE_DIR"
+sudo chmod -R 770 "$SHARE_DIR"
+
+if ! grep -q "\[${CLIENT_NAME}_share\]" /etc/samba/smb.conf; then
+    sudo tee -a /etc/samba/smb.conf > /dev/null <<EOF
+
+[${CLIENT_NAME}_share]
+   path = $SHARE_DIR
+   valid users = $CLIENT_NAME
+   writable = yes
+   create mask = 0700
+   directory mask = 0700
+   read only = no
+EOF
+fi
+
+(echo "$CLIENT_PASSWORD"; echo "$CLIENT_PASSWORD") | sudo smbpasswd -s -a "$CLIENT_NAME"
+sudo smbpasswd -e "$CLIENT_NAME"
+
+sudo systemctl enable smb
+sudo systemctl restart smb
+
+echo "[INFO] ➤ Installation NFS sur serveur principal..."
+sudo yum install -y nfs-utils
+echo "$SHARE_DIR *(rw,sync,no_subtree_check,no_root_squash)" | sudo tee -a /etc/exports
+sudo exportfs -ra
+sudo systemctl enable nfs-server
+sudo systemctl start nfs-server
+
+# Préparation du script client à déployer
+
+CLIENT_SETUP_SCRIPT="/tmp/client_setup.sh"
+
+cat > "$CLIENT_SETUP_SCRIPT" <<EOF_CLIENT_SETUP
+#!/bin/bash
+set -e
+
+LOG_FILE="/var/log/client_setup.log"
+exec > >(tee -a "\$LOG_FILE") 2>&1
+
+SERVER_IP="$CLIENT_SERVER_IP"
+FTP_CLIENT="lftp"
+SAMBA_CLIENT="samba-client"
+
+echo "[INFO] Mise à jour du système..."
+sudo yum update -y
+
+echo "[INFO] Installation et configuration de chrony (NTP)..."
+sudo yum install -y chrony
+if ! grep -q "^server \$SERVER_IP iburst" /etc/chrony.conf; then
+    echo "server \$SERVER_IP iburst" | sudo tee -a /etc/chrony.conf
+    sudo systemctl restart chronyd
+    echo "[OK] Serveur NTP ajouté et chronyd redémarré."
+else
+    echo "[INFO] Serveur NTP déjà configuré."
+fi
+sudo systemctl enable chronyd
+sudo systemctl start chronyd
+
+echo "[INFO] Installation et démarrage de firewalld..."
+sudo yum install -y firewalld
+sudo systemctl enable firewalld
+sudo systemctl start firewalld
+
+sudo firewall-cmd --permanent --add-service=ftp
+sudo firewall-cmd --permanent --add-service=samba
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=ntp
+sudo firewall-cmd --permanent --add-service=ssh
+sudo firewall-cmd --reload
+
+echo "[INFO] Installation des clients FTP, Samba, Telnet et LFTP..."
+sudo yum install -y \$FTP_CLIENT \$SAMBA_CLIENT telnet lftp
+
+echo "[INFO] Installation et configuration de fail2ban..."
+sudo yum install -y fail2ban
+sudo systemctl enable fail2ban
+sudo systemctl start fail2ban
+
+sudo tee /etc/fail2ban/jail.d/sshd.conf > /dev/null <<EOT
+[sshd]
+enabled  = true
+port     = ssh
+logpath  = /var/log/secure
+maxretry = 3
+bantime  = 3600
+EOT
+
+sudo tee /etc/fail2ban/jail.d/httpd.conf > /dev/null <<EOT
+[httpd]
+enabled  = true
+port     = http,https
+logpath  = /var/log/httpd/*log
+maxretry = 3
+bantime  = 3600
+EOT
+
+sudo systemctl restart fail2ban
+
+echo "[INFO] Vérification et activation de SELinux en mode enforcing..."
+if sestatus | grep -q "SELinux status: disabled"; then
+    sudo sed -i 's/^SELINUX=.*/SELINUX=enforcing/' /etc/selinux/config
+    sudo setenforce 1
+    echo "[OK] SELinux activé et en mode enforcing."
+else
+    echo "[INFO] SELinux est déjà activé."
+fi
+
+echo "[INFO] Installation et démarrage de ClamAV antivirus..."
+sudo yum install -y clamav clamav-update
+sudo systemctl enable clamd
+sudo systemctl start clamd
+
+echo "[INFO] Tests de connexion :"
+
+chronyc sources | grep "\$SERVER_IP" >/dev/null && echo "[OK] Serveur NTP détecté." || echo "[FAIL] Serveur NTP absent."
+lftp -e "exit" ftp://\$SERVER_IP && echo "[OK] Connexion FTP OK." || echo "[FAIL] Connexion FTP échouée."
+smbclient -L //\$SERVER_IP -N > /dev/null 2>&1 && echo "[OK] Connexion Samba OK." || echo "[FAIL] Connexion Samba échouée."
+
+echo "[SUCCESS] Configuration client terminée."
+EOF_CLIENT_SETUP
+
+chmod +x "$CLIENT_SETUP_SCRIPT"
+
+echo "[INFO] ➤ Transfert du script client sur $CLIENT_SERVER_IP..."
+scp "$CLIENT_SETUP_SCRIPT" ec2-user@"$CLIENT_SERVER_IP":/tmp/client_setup.sh
+
+echo "[INFO] ➤ Exécution du script client sur $CLIENT_SERVER_IP..."
+ssh ec2-user@"$CLIENT_SERVER_IP" 'bash /tmp/client_setup.sh'
+
+echo "[SUCCESS] ➤ Client $CLIENT_NAME configuré sur serveur principal ET serveur client ($CLIENT_SERVER_IP)."
+echo " ➤ Site web: http://$DOMAIN"
+echo " ➤ FTP: ftp://$CLIENT_SERVER_IP/$CLIENT_NAME"
+echo " ➤ Samba: \\\\$CLIENT_SERVER_IP\\${CLIENT_NAME}_share"
+echo " ➤ Base de données: $DB_NAME / $DB_USER"
